@@ -13,10 +13,11 @@ def run_training_job(experiment_id: str):
     db = SessionLocal()
 
     try:
-        ExperimentRepository.update_status(db, experiment_id, "running")
-
         # Properly fetch models globally using the fixed explicit mapper!
         experiment = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+
+        # 1. mark running
+        ExperimentRepository.mark_running(db, experiment)
 
         dataset = db.query(Dataset).filter(Dataset.id == experiment.dataset_id).first()
 
@@ -40,17 +41,24 @@ def run_training_job(experiment_id: str):
         from app.pipelines.training_pipeline import run_training_pipeline
         model_path = run_training_pipeline(config)
 
-        # 4. update experiment
-        experiment.status = "completed"
-        experiment.training_logs = "Training successful"
-        db.commit()
+        # 5. evaluation
+        # IMPORTANT FIX: Also nest Evaluation import directly!
+        from app.services.evaluation_service import EvaluationService
+        metrics = EvaluationService.evaluate(
+            model_path,
+            config["base_model"]
+        )
+
+        # add training loss placeholder
+        metrics["loss"] = 0.0
+
+        # 6. mark completed
+        ExperimentRepository.mark_completed(db, experiment, metrics)
 
     except Exception as e:
         db.rollback()
         experiment = db.query(Experiment).filter(Experiment.id == experiment_id).first()
-        experiment.status = "failed"
-        experiment.training_logs = str(e)
-        db.commit()
+        ExperimentRepository.mark_failed(db, experiment, str(e))
         print(str(e))
 
     finally:
